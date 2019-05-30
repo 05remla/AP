@@ -1,0 +1,167 @@
+#!/bin/bash
+# CREATED ON: APR.04,2013
+# CREATED BY: o-5
+# PURPOSE:    THIS IS A SCRIPT TO AUTOMATE THE
+#             PROCESS OF TURNING YOUR COMPUTER
+#             INTO A ROUTER.
+#
+#######################
+# REQUIREMENTS:
+#
+# PACKAGES:
+# 1)HOSTAPD
+# 2)DHCPD SERVER
+#
+#######################
+# $WORKDIR SHOULD CONTAIN:
+#
+# 1)DHCPD.CONF
+# 2)HOSTAPD-SEC-.CONF
+# 3)INTERFACES.CONF
+# 4)SEC_LINK SCRIPT
+# 5)ROUTING SCRIPT
+#
+#######################
+# VARIABLE DEFINITIONS
+
+export WorkDir=$(dirname $(readlink -f $0))
+export LAN=$(cat "${WorkDir}/interfaces.conf" | grep LAN | cut -d# -f2)
+export WAN=$(cat "${WorkDir}/interfaces.conf" | grep WAN | cut -d# -f2)
+export red='\e[0;31m'
+export blue='\e[0;34m'
+export cyan='\e[0;36m'
+export NC='\e[0m'
+
+#####
+#######################
+##### SCRIPT BODY
+
+
+# REMINDER
+clear
+echo -e "${red}** SECURE LINK ACCESS POINT **"
+echo
+echo -e "-For best results you should connect your WAN interface"
+echo -e " before proceeding so that it will automatically reestablish"
+echo -e " the connection when the AP comes up, making the process easier"
+echo
+echo -e "-You need at least one wireless interface to serve as the AP"
+echo -e " (define it in ${WorkDir}/${0}; default=wlan0)"
+echo
+echo -e "-If the AP isn't functioning properly changes can be made in"
+echo -e " ${WorkDir}/[SEC_link-AP.sh | hostapd-sec-.conf]"
+echo
+echo -e "-This will disconect you from the internet temporarily."
+echo
+echo -e "${red}========================================================="
+echo -e "${red}Changes to variables can be made in the 'sec_link' script"
+echo -e "${blue}Working Directory = ${WorkDir}${NC}"
+echo -e "${blue}LAN               = ${LAN}${NC}"
+echo -e "${blue}WAN               = ${WAN}${NC}"
+echo -e "${red}========================================================="
+echo
+echo -e "${cyan}[ENTER] TO CONTINUE. [CTRL]+C TO EXIT${NC}"
+read
+
+
+# COPY CONFIG FILES OVER
+echo -e "${red}COPYING/GENERATING CONFIG FILES${NC}"
+echo > "/var/lib/dhcp/dhcpd.leases"
+cp -f "${WorkDir}/dhcpd.conf" /etc/dhcp/
+
+echo "interface=${LAN}" > "/etc/hostapd/hostapd-sec-.conf"
+while read line  
+do
+    echo $line >> "/etc/hostapd/hostapd-sec-.conf"
+done <"${WorkDir}/hostapd-sec-.conf"
+
+
+
+# STOP NETWORKING
+pkill NetworkManager
+
+
+# MAKE LAN IP STATIC
+echo "auto ${LAN}" >> /etc/network/interfaces
+echo "iface ${LAN} inet static" >> /etc/network/interfaces
+echo "address 10.5.0.1" >> /etc/network/interfaces
+echo "netmask 255.255.255.0" >> /etc/network/interfaces
+
+
+# ENABLE ENCRYPTION
+echo
+echo -e "${cyan}Enable encryption? [yes/no]"
+read encryption_
+if [[ "$encryption_" = "y" ]] || [[ "$encryption_" = "yes" ]];then
+  echo
+  echo -e "${blue}Define passphrase. Must be at least 7 characters."
+  printf "> "
+  read passphrase
+  echo "00:00:00:00:00:00 ${passphrase}" > /etc/hostapd/hostapd-psk
+  echo "wpa=2" >> /etc/hostapd/hostapd-sec-.conf						# CHANGE WPA ENCYPT TYPE HERE
+  echo "wpa_psk_file=/etc/hostapd/hostapd-psk" >> /etc/hostapd/hostapd-sec-.conf
+  echo "wpa_key_mgmt=WPA-PSK" >> /etc/hostapd/hostapd-sec-.conf
+  echo "wpa_pairwise=CCMP TKIP" >> /etc/hostapd/hostapd-sec-.conf
+  echo "rsn_pairwise=CCMP" >> /etc/hostapd/hostapd-sec-.conf
+fi
+
+
+# RESET INTERFACES
+echo
+echo -e "${red}RESETING INTERFACES${NC}"
+ifconfig mon.$LAN down 2>/dev/null
+ifconfig $LAN 0.0.0.0 down
+ifconfig $WAN 0.0.0.0 down
+sleep 1
+ifconfig $LAN 10.5.0.1 up
+ifconfig $WAN up
+sleep 2
+
+
+# START HOSTAPD
+echo
+echo -e "${red}AP INITIALIZING (4 SECS)...${NC}"
+xterm -geometry 80x54+0+0 -e "sh -c 'hostapd /etc/hostapd/hostapd-sec-.conf; read'" &
+sleep 4
+
+
+# START DHCP SERVER
+mkdir -p /var/run/dhcpd && chmod 777 /var/run/dhcpd
+xterm -geometry 80x24+0+400 -e "sh -c 'dhcpd -cf /etc/dhcp/dhcpd.conf -pf /var/run/dhcpd/dhcpd.pid $LAN; sleep 4'" &
+
+
+# AUTO DETECT CLIENT CONNECTIONS THEN CONNECT TO INTERNET AND SET IP TABLE RULES
+
+	echo
+	echo -e "${red}WAITING FOR CLIENT TO CONNECT..."
+		while true
+		do
+			sleep 4
+			client_=`cat /var/lib/dhcp/dhcpd.leases 2>&1 | grep "binding state active"`
+				if [[ "$client_" != "" ]];then
+				echo -e "${red}Starting NetworkManager...${NC}"
+				NetworkManager &
+				break
+				fi
+		done
+
+
+	echo
+	echo -e "${red}WAITING FOR CONNECTION TO INTERNET..."
+		while true
+		do
+			sleep 4
+			state_=`cat /sys/class/net/${WAN}/operstate`
+				if [[ "$state_" = "up" ]];then
+				echo -e "${red}Routing..."
+				bash ${WorkDir}/routing.sh
+				echo -e ${NC}
+				break
+				fi
+		done
+
+
+
+#############################
+#    (E)ND (O)F (F)ILE      #
+#############################
